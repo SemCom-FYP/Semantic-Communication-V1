@@ -1,0 +1,8 @@
+.claude
+__pycache__/
+Binary
+Codebook
+Weights
+*.bin
+Datasets
+.vscode
