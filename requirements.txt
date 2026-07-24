@@ -1,0 +1,12 @@
+torch
+torchvision
+timm
+Pillow
+numpy
+matplotlib
+opencv-python
+numba
+pytorch-msssim
+lpips
+pandas
+requests
