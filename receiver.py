@@ -1,6 +1,8 @@
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import warnings
 warnings.filterwarnings("ignore")
-
 
 import torch.nn as nn
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
@@ -14,7 +16,6 @@ from torch.utils.data import Dataset
 from PIL import Image
 from PIL import ImageFile
 # import cv2
-import os
 from glob import glob
 from torchvision import transforms, datasets
 from torch.utils.data.dataset import Dataset
@@ -47,6 +48,7 @@ import argparse
 # chunk_size = 4         # 4d vectors in the codebook
 # k = 512
 TX_BINARY_BASE_PATH = './Binary/Transmitted_Binary/'
+OUTPUT_DIR = './output/'
 int_size = 8
 NORMALIZE_CONSTANT = 20
 
@@ -433,7 +435,7 @@ def separate_binary_file(combined_file, output_file1, output_file2):
 
 def decode_and_evaluate(received_binary_path, image_path=None, resolution = (512,768), NORMALIZE_CONSTANT = 20, int_size=8, adaptive=False):           # Image path is original image
 
-    tensor_shape = (1, int((resolution[0]*resolution[1])/(16*16)), 32)          # (Image size is 512x768x3 --> tensor (1, H/16 * W/16, 32))
+    tensor_shape = (1, int(resolution[0]) * int(resolution[1]) // (16*16), 32)
 
     # if int_size == 8: 
     #     received_feature = np.fromfile(received_binary_path, dtype=np.int8).reshape(tensor_shape)
@@ -489,7 +491,7 @@ def decode_and_evaluate(received_binary_path, image_path=None, resolution = (512
         save_image(recon_image, f"reconstructed_patches_grid.png")
 
         reconstructed_image = decode_image_adaptive(grid_image_file="./recon/reconstructed_patches_grid.png",
-                                                    coord_file="patch_coord_received.bin",Pm=patch_size, padding=2)
+                                                    coord_file=os.path.join(OUTPUT_DIR, "patch_coord_received.bin"),Pm=patch_size, padding=2)
         reconstructed_image = reconstructed_image.clamp(0,1)
         
 
@@ -559,7 +561,7 @@ def decode_indices_and_plot (received_binary_path , codebook_path, image_path=No
     valid_indices = torch.clamp(valid_indices, min=0, max=k-1)
     #valid_indices = recovered_indices
 
-    M = int((resolution[0]*resolution[1])/(16*16))
+    M = int(resolution[0]) * int(resolution[1]) // (16*16)
     output_image_base_path = f"./recon/{chunk_size}d_{k}k/adaptive={adaptive}/"
     grid_image_base_path = "./recon/"
 
@@ -587,7 +589,7 @@ def decode_indices_and_plot (received_binary_path , codebook_path, image_path=No
     else:
         save_image(recon_image, f"reconstructed_patches_grid.png", grid_image_base_path)
         reconstructed_image = decode_image_adaptive(grid_image_file="./recon/reconstructed_patches_grid.png",
-                                                    coord_file="patch_coord_received.bin",Pm=patch_size, padding=2)
+                                                    coord_file=os.path.join(OUTPUT_DIR, "patch_coord_received.bin"),Pm=patch_size, padding=2)
         reconstructed_image = reconstructed_image.clamp(0,1)
 
         if image_path is not None:
@@ -668,8 +670,8 @@ def prepare_image_path(original_path):
 
 
 def main(received_filename, image_path=None, use_codebook=False, resolution_args=(None, None), adaptive_override=None):
-    # separate_binary_file(received_filename, "patch_coord_received.bin", "image_data_received.bin")
-    received_bin_file = 'image_data_received.bin'
+    # separate_binary_file(received_filename, os.path.join(OUTPUT_DIR, "patch_coord_received.bin"), "image_data_received.bin")
+    received_bin_file = os.path.join(OUTPUT_DIR, 'image_data_received.bin')
 
     # with open(received_bin_file, "rb") as f:
     #     flag_byte = f.read(1)
@@ -707,11 +709,11 @@ def main(received_filename, image_path=None, use_codebook=False, resolution_args
         codebook_path_final = codebook_path_adaptive
         #print(f"Using codebook: {codebook_path_final}")
 
-        binary_file_path = "patch_coord_received.bin"
+        binary_file_path = os.path.join(OUTPUT_DIR, "patch_coord_received.bin")
         with open(binary_file_path, "rb") as f:
             # Read grid size (rows, cols)
             grid_size = np.fromfile(f, dtype=np.uint16, count=2)
-            rows, cols = grid_size[0], grid_size[1]
+            rows, cols = int(grid_size[0]), int(grid_size[1])
 
             effective_patch_size = patch_size + 2 * 2
             print(f"Resolution read from file: {rows * effective_patch_size}x{cols * effective_patch_size}")
@@ -727,7 +729,7 @@ def main(received_filename, image_path=None, use_codebook=False, resolution_args
         codebook_path_final = codebook_path_wo_adaptive
         #print(f"Using codebook: {codebook_path_final}")
 
-        binary_file_path = "patch_coord_received.bin"  # Replace with your binary file path
+        binary_file_path = os.path.join(OUTPUT_DIR, "patch_coord_received.bin")  # Replace with your binary file path
         with open(binary_file_path, 'rb') as f:
             data = f.read()
         resolution_str = data.decode('utf-8')
@@ -766,8 +768,8 @@ if __name__ == "__main__":
 
     arguments = parser.parse_args()
 
-    separate_binary_file(arguments.received_file, "patch_coord_received.bin", "image_data_received.bin")
-    received_bin_file = 'image_data_received.bin'
+    separate_binary_file(arguments.received_file, os.path.join(OUTPUT_DIR, "patch_coord_received.bin"), os.path.join(OUTPUT_DIR, "image_data_received.bin"))
+    received_bin_file = os.path.join(OUTPUT_DIR, 'image_data_received.bin')
 
     # --- Decode 5 control bytes BEFORE main ---
     with open(received_bin_file, "rb") as f:

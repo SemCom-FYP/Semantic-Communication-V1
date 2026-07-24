@@ -5,6 +5,7 @@ End-to-end image transmission system over wireless channels using a Swin Transfo
 Key features:
 - **Adaptive patching** — quadtree edge-detection selects informative patches, reducing transmitted data for smooth/uniform images
 - **Codebook quantization** — vector quantization maps encoded features to discrete codewords (2d/4d/8d, 256–1024 clusters)
+- **Hamming error correction** — redundant bit encoding on the 5-byte control header and codeword indices
 - **Channel support** — Rayleigh fading and AWGN
 - **Raspberry Pi transmitter** — `transmitter_pi.py` supports Pi Camera capture
 - **Remote execution** — MATLAB launcher scripts run Python over SSH on a remote GPU server
@@ -42,23 +43,26 @@ python transmitter.py --image_path Datasets/Kodak/kodim23.png --use_codebook --a
 
 # Force adaptive patching off
 python transmitter.py --image_path Datasets/Kodak/kodim23.png --use_codebook --adaptive false
+
+# Custom patch size and quadtree depth
+python transmitter.py --image_path Datasets/Kodak/kodim23.png --use_codebook --patch_size 60 --depth 6
 ```
 
-Output: `combined_binary.bin` — the file to transmit over the channel.
+Output: `output/combined_binary.bin` — the file to transmit over the channel.
 
 ### 4. Receive and reconstruct
 
 ```bash
-# Basic receive (no codebook)
-python receiver.py --received_file combined_binary.bin --image_path Datasets/Kodak/kodim23.png
+# Basic receive (settings auto-detected from binary header)
+python receiver.py --received_file output/combined_binary_received.bin --image_path Datasets/Kodak/kodim23.png
 
-# With codebook (must match transmitter settings)
-python receiver.py --received_file combined_binary.bin \
+# Override codebook setting manually
+python receiver.py --received_file output/oucombined_binary_received.bin \
                    --image_path Datasets/Kodak/kodim23.png \
-                   --use_codebook
+                   --use_codebook true
 
 # Override resolution if auto-detection fails
-python receiver.py --received_file combined_binary.bin --res_h 512 --res_w 768
+python receiver.py --received_file output/combined_binary_received.bin --res_h 512 --res_w 768
 ```
 
 Reconstructed image is saved under `recon/` and quality metrics (PSNR, MS-SSIM, LPIPS) are printed and appended to an Excel file.
@@ -72,30 +76,24 @@ swin-semantic-communication/
 ├── Codebook/                        # Pre-trained vector quantization codebooks (.npy)
 │   ├── codebook_{D}d_{K}clusters_{type}.npy
 │   ├── adaptive_patching_codebook_{D}d_{K}clusters_{type}.npy
-│   └── index_to_codeword.pkl        # Codeword lookup table
+│   └── index_to_codeword.pkl        # Codeword lookup table for Hamming encoding
 │
 ├── matlab/                          # MATLAB launcher scripts
 │   ├── matlab_transmitter.m         # Run transmitter.py locally
-│   ├── matlab_transmitter2.m        # Run transmitter2_new.py locally
 │   ├── matlab_receiver.m            # Run receiver.py locally
-│   ├── matlab_receiver2.m           # Run receiver2_new.py locally
 │   ├── remote_transmit.m            # Run transmitter.py on remote server via SSH
-│   ├── remote_transmit2.m           # Run transmitter2_new.py on remote server via SSH
 │   ├── remote_receive.m             # Run receiver.py on remote server via SSH
-│   ├── remote_receive2.m            # Run receiver2_new.py on remote server via SSH
 │   ├── simulation.m                 # Local simulation launcher
-│   └── simulation_remote.m         # Remote simulation launcher
+│   └── simulation_remote.m          # Remote simulation launcher
 │
 ├── Testing/                         # Test notebooks
 │   ├── ber.ipynb                    # BER analysis
 │   └── error correction/
 │       └── error-correction-testing.ipynb
 │
-├── transmitter.py                   # Transmitter v1 (standard patch size)
-├── transmitter2_new.py              # Transmitter v2 (configurable patch_size, depth)
+├── transmitter.py                   # Transmitter (adaptive patching, codebook, Hamming encoding)
 ├── transmitter_pi.py                # Transmitter for Raspberry Pi (Pi Camera support)
-├── receiver.py                      # Receiver v1
-├── receiver2_new.py                 # Receiver v2 (configurable patch_size, depth)
+├── receiver.py                      # Receiver (auto-detects settings from binary header)
 ├── sim.py                           # Full simulated pipeline (no physical channel)
 │
 ├── swin_functions.py                # SwinJSCC model definition and encode/decode helpers
@@ -117,25 +115,19 @@ swin-semantic-communication/
 
 ---
 
-## Transmitter Scripts
+## Transmitter
 
-| Script | Use case | Extra flags |
-|---|---|---|
-| `transmitter.py` | Local PC, standard use | — |
-| `transmitter2_new.py` | Local PC, custom patch size / depth | `--patch_size`, `--depth` |
-| `transmitter_pi.py` | Raspberry Pi | `--use_camera` |
-
-### CLI arguments (all transmitters)
+### CLI arguments
 
 | Argument | Default | Description |
 |---|---|---|
-| `--image_path` | required | Path to input image |
+| `--image_path` | required | Path to input image (JPEG/DNG auto-converted to PNG) |
 | `--use_codebook` | off | Enable codebook quantization |
 | `--adaptive` | auto | `true` / `false` to override auto-detection |
 | `--k` | `512` | Codebook size (clusters): `256`, `512`, `1024` |
 | `--chunk_size` | `4` | Vector dimension: `2`, `4`, `8` |
-| `--patch_size` | — | *(v2 only)* Quadtree base patch size: `28` or `60` |
-| `--depth` | — | *(v2 only)* Quadtree depth: `5` or `6` |
+| `--patch_size` | auto | Quadtree base patch size: `28` or `60` |
+| `--depth` | auto | Quadtree depth: `4`, `5`, `6`, or `7` |
 
 ### Codebook combinations
 
@@ -147,14 +139,23 @@ swin-semantic-communication/
 | `4` | `1024` | 4d, 1024 clusters |
 | `8` | `1024` | 8d, 1024 clusters |
 
+### Binary header format
+
+The transmitter writes a 5-byte control header before the payload. Each byte uses redundant bit encoding (majority voting) so the receiver can recover settings even under bit errors:
+
+| Byte | Content |
+|---|---|
+| 1 | Adaptive patching flag (7-bit redundant) |
+| 2 | Codebook enabled flag (7-bit redundant) |
+| 3 | Chunk size (2-bit × 3 repetitions: `01`=2, `10`=4, `11`=8) |
+| 4 | Codebook k size (2-bit × 3 repetitions: `01`=256, `10`=512, `11`=1024) |
+| 5 | Patch size flag (7-bit redundant: 0=28, 1=60) |
+
 ---
 
-## Receiver Scripts
+## Receiver
 
-| Script | Use case |
-|---|---|
-| `receiver.py` | Matches `transmitter.py` |
-| `receiver2_new.py` | Matches `transmitter2_new.py` |
+Settings (`chunk_size`, `k`, `use_codebook`, `patch_size`, adaptive mode) are **auto-detected from the binary header** by default. CLI flags override when needed.
 
 ### CLI arguments
 
@@ -162,10 +163,11 @@ swin-semantic-communication/
 |---|---|---|
 | `--received_file` | `combined_binary_received.bin` | Path to received binary file |
 | `--image_path` | none | Original image path (for PSNR/SSIM/LPIPS comparison) |
-| `--use_codebook` | off | Must match transmitter setting |
-| `--k` | `512` | Must match transmitter setting |
-| `--chunk_size` | `4` | Must match transmitter setting |
-| `--adaptive` | auto | Override adaptive flag detection: `true` / `false` |
+| `--use_codebook` | auto | `true` / `false` to override header detection |
+| `--k` | auto | Override codebook size from header |
+| `--chunk_size` | auto | Override vector dimension from header |
+| `--patch_size` | auto | Override patch size: `28` or `60` |
+| `--adaptive` | auto | Override adaptive flag: `true` / `false` |
 | `--res_h`, `--res_w` | auto | Override resolution read from binary header |
 
 ---
@@ -200,7 +202,7 @@ Edit the variable block at the top of each script to set `imagePath`, `useCodebo
 
 ### Remote execution (SSH)
 
-`remote_transmit.m` / `remote_receive.m` upload the image to a remote server via SCP, run the Python script remotely via SSH, then download the result binary back.
+`remote_transmit.m` / `remote_receive.m` upload the image to a remote server via SCP, run the Python script remotely via SSH, then download the result back. `remote_receive.m` also parses the Python output to auto-detect used parameters and logs results to `results_summary.xlsx`.
 
 Edit the top of each script to set `remoteUser`, `remoteHost`, `remotePython`, `remoteScriptDir`.
 
@@ -228,8 +230,13 @@ SwinJSCC_{model}_{channel}_HRimage_snr{snr}_psnr_C{C}.model
 ## Directory Layout (auto-created at runtime)
 
 ```
+output/                    # Intermediate files produced by the transmitter
+│   ├── patches_grid.png   # Adaptive patch grid image
+│   ├── patch_coords.bin   # Patch coordinates / resolution metadata
+│   └── combined_binary.bin  # Final binary ready to transmit
+
 Binary/
-├── Transmitted_Binary/    # .bin files output by transmitter
+├── Transmitted_Binary/    # Labelled copies of combined_binary.bin (per image/mode)
 └── Received_Binary/       # .bin files after channel
 
 recon/                     # Reconstructed images
@@ -243,10 +250,6 @@ Datasets/
 ---
 
 ## Getting Model Weights
-
-There are two ways to get the required weights file.
-
----
 
 ### Option A — Download pretrained weights (recommended)
 
@@ -264,7 +267,7 @@ SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model
 
 Place it at `Weights/` in the project root:
 
-```
+```bash
 mkdir -p Weights
 # then move the downloaded file here
 ```

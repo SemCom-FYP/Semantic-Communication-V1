@@ -1,5 +1,7 @@
-import warnings
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+import warnings
 warnings.filterwarnings("ignore")
 
 import torch.nn as nn
@@ -13,7 +15,6 @@ from random import choice
 from torch.utils.data import Dataset
 from PIL import Image
 # import cv2
-import os
 from glob import glob
 from torchvision import transforms, datasets
 from torch.utils.data.dataset import Dataset
@@ -46,6 +47,7 @@ import argparse
 # k = 512
 
 TX_BINARY_BASE_PATH = './Binary/Transmitted_Binary/'
+OUTPUT_DIR = './output/'
 int_size = 8
 NORMALIZE_CONSTANT = 20
 
@@ -85,7 +87,7 @@ import pickle
 with open("Codebook/index_to_codeword.pkl", "rb") as f:
     index_to_codeword = pickle.load(f)
 
-save_directories = ["./recon/", "./Binary/Received_Text/", "./Binary/Received_Binary/", "./Binary/Transmitted_Binary/", "./Weights/", "./Datasets/"]
+save_directories = ["./recon/", "./output/", "./Binary/Received_Text/", "./Binary/Received_Binary/", "./Binary/Transmitted_Binary/", "./Weights/", "./Datasets/"]
 
 for save_dir in save_directories:
     if not os.path.exists(save_dir):
@@ -392,7 +394,7 @@ def main(image_path, use_codebook=False, adaptive=None):
                                             H=depth,        # maximum quadtree depth
                                             Pm=patch_size,      # base patch size before padding  # Pm=patch_size
                                             L=None,     # number of patches in the grid   (If None, it will be set to the number of adaptive patches)
-                                            grid_image_file="patches_grid.png", coord_file="patch_coords.bin",
+                                            grid_image_file=os.path.join(OUTPUT_DIR, "patches_grid.png"), coord_file=os.path.join(OUTPUT_DIR, "patch_coords.bin"),
                                             padding=2, visualize=False)
         
     
@@ -406,7 +408,7 @@ def main(image_path, use_codebook=False, adaptive=None):
     print(f"Adaptive Patch enabled : {adaptive_patch_enabled}")
 
     if adaptive_patch_enabled:
-        image_path = 'patches_grid.png'
+        image_path = os.path.join(OUTPUT_DIR, 'patches_grid.png')
 
     if use_codebook:
         print("Encoding with codebook...")
@@ -415,8 +417,7 @@ def main(image_path, use_codebook=False, adaptive=None):
 
         if not adaptive_patch_enabled:
             resolution_data = f"Resolution: {H_image}x{W_image}".encode('utf-8')
-            # Open the binary file in write-binary mode and overwrite it
-            binary_file_path = "patch_coords.bin"  # Replace with your binary file path
+            binary_file_path = os.path.join(OUTPUT_DIR, "patch_coords.bin")
             with open(binary_file_path, 'wb') as f:
                 f.write(resolution_data)
             print(f"Binary file overwritten with resolution: {H_image}x{W_image}")
@@ -484,23 +485,21 @@ def main(image_path, use_codebook=False, adaptive=None):
         bin_file_path = bin_path
 
         print(f"Encoded feature saved to {bin_path}")
-        combine_binary_files("patch_coords.bin", bin_path, "combined_binary.bin")
+        combine_binary_files(os.path.join(OUTPUT_DIR, "patch_coords.bin"), bin_path, os.path.join(OUTPUT_DIR, "combined_binary.bin"))
 
     else:
         print("Encoding without codebook...")
 
         if not adaptive_patch_enabled:
             resolution_data = f"Resolution: {H_image}x{W_image}".encode('utf-8')
-            # Open the binary file in write-binary mode and overwrite it
-            binary_file_path = "patch_coords.bin"  # Replace with your binary file path
+            binary_file_path = os.path.join(OUTPUT_DIR, "patch_coords.bin")
             with open(binary_file_path, 'wb') as f:
                 f.write(resolution_data)
             print(f"Binary file overwritten with resolution: {H_image}x{W_image}")
-        
 
         output_path = TX_BINARY_BASE_PATH + "encoded_feature.bin"
-        process_and_encode_image_to_binary(image_path, output_path, adaptive_patch_enabled, NORMALIZE_CONSTANT, int_size)
-        combine_binary_files("patch_coords.bin", output_path, "combined_binary.bin")
+        process_and_encode_image_to_binary(image_path, output_path, adaptive_patch_enabled, NORMALIZE_CONSTANT, int_size, patch_size)
+        combine_binary_files(os.path.join(OUTPUT_DIR, "patch_coords.bin"), output_path, os.path.join(OUTPUT_DIR, "combined_binary.bin"))
         bin_file_path = output_path
     
     # Print image and file size
@@ -518,7 +517,7 @@ def main(image_path, use_codebook=False, adaptive=None):
 
 
     combined_binary_name = f'./Binary/Transmitted_Binary/{image_name.split(".")[0]}_combined_binary_{label}.bin'
-    shutil.copyfile("combined_binary.bin", combined_binary_name)
+    shutil.copyfile(os.path.join(OUTPUT_DIR, "combined_binary.bin"), combined_binary_name)
 
 
 

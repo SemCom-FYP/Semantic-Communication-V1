@@ -62,7 +62,7 @@ combinedBinaryName = fullfile('Binary', 'Transmitted_Binary', sprintf('%s_combin
 
 
 % Copy binary file back
-remoteBin = fullfile(remoteScriptDir, 'combined_binary.bin');
+remoteBin = fullfile(remoteScriptDir, 'output', 'combined_binary.bin');
 localBin = 'combined_binary.bin';
 scpCmd = sprintf('scp %s@%s:%s %s', remoteUser, remoteHost, remoteBin, localBin);
 [scpStatus, scpOutput] = system(scpCmd);
