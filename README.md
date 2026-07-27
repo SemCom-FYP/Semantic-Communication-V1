@@ -5,23 +5,51 @@ End-to-end image transmission system over wireless channels using a Swin Transfo
 Key features:
 - **Adaptive patching** — quadtree edge-detection selects informative patches, reducing transmitted data for smooth/uniform images
 - **Codebook quantization** — vector quantization maps encoded features to discrete codewords (2d/4d/8d, 256–1024 clusters)
-- **Hamming error correction** — redundant bit encoding on the 5-byte control header and codeword indices
+- **Hamming error correction** — redundant bit encoding on the 5-byte control header; Hamming codeword mapping on k=512 indices
 - **Channel support** — Rayleigh fading and AWGN
-- **Raspberry Pi transmitter** — `transmitter_pi.py` supports Pi Camera capture
+- **Raspberry Pi transmitter** — `transmitter_pi.py` supports Pi Camera capture with a quantized (int8) model
 - **Remote execution** — MATLAB launcher scripts run Python over SSH on a remote GPU server
 
 ---
 
 ## Quick Start
 
+### Which script to use
+
+| Script | Use when |
+|---|---|
+| `sim.py` | Testing the full pipeline in software (no hardware required) |
+| `transmitter.py` | Encoding an image to `combined_binary.bin` for physical transmission |
+| `receiver.py` | Decoding a received binary file back to an image |
+| `transmitter_pi.py` | Encoding on a Raspberry Pi (quantized model, optional Pi Camera) |
+| `download_kodek.py` | Downloading the 24 Kodak test images |
+| `camera_testing.py` | Testing that Pi Camera (`libcamera-still`) is working |
+| `Swin_Training.py` | Training the SwinJSCC model from scratch |
+
+### Prerequisites
+
+- Python 3.8+
+- PyTorch with CUDA (GPU recommended; CPU works but is slow for inference)
+- The pretrained model weight file (see step 3)
+
 ### 1. Install dependencies
 
 ```bash
 pip install torch torchvision timm numpy pillow opencv-python matplotlib \
-            pytorch-msssim lpips pandas openpyxl
+            pytorch-msssim lpips pandas openpyxl numba requests
 ```
 
-### 2. Place model weights
+> `openpyxl` is required for Excel metric logging. `numba` is required for adaptive patching coordinate reconstruction.
+
+### 2. Download the Kodak dataset
+
+```bash
+python download_kodek.py
+```
+
+This downloads all 24 Kodak images (`kodim01.png` … `kodim24.png`) into `Datasets/Kodak/`.
+
+### 3. Place model weights
 
 Download the pretrained SwinJSCC weight file and place it at:
 
@@ -29,7 +57,28 @@ Download the pretrained SwinJSCC weight file and place it at:
 Weights/SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model
 ```
 
-### 3. Transmit an image
+See [Getting Model Weights](#getting-model-weights) below for download instructions or how to train from scratch.
+
+### 4. Verify with a simulated end-to-end test
+
+The fastest way to confirm everything is working is to run `sim.py`, which simulates the full transmit → channel → receive pipeline in software without any physical hardware:
+
+```bash
+python sim.py --type both --image_path Datasets/Kodak/kodim23.png --noise 10
+```
+
+Expected output: PSNR, MS-SSIM, and LPIPS metrics printed to stdout, and a reconstructed image saved to `recon/simulated_image.png`.
+
+To test with codebook quantization:
+
+```bash
+python sim.py --type both --image_path Datasets/Kodak/kodim23.png \
+              --use_codebook --k 512 --chunk_size 4 --noise 10
+```
+
+### 5. Transmit an image
+
+Once the model is confirmed working, use `transmitter.py` to produce a binary file ready for physical transmission:
 
 ```bash
 # Auto mode: adaptive patching decided automatically, no codebook
@@ -50,19 +99,27 @@ python transmitter.py --image_path Datasets/Kodak/kodim23.png --use_codebook --p
 
 Output: `output/combined_binary.bin` — the file to transmit over the channel.
 
-### 4. Receive and reconstruct
+A labelled copy is also saved to `Binary/Transmitted_Binary/{image_stem}_combined_binary_{label}.bin`.
+
+### 6. Transmit the binary over the channel
+
+Send `output/combined_binary.bin` over your physical or simulated channel. The received file (possibly with bit errors) is the input to the next step.
+
+For a loopback test with no channel (lossless), pass the transmitter output directly to the receiver.
+
+### 7. Receive and reconstruct
 
 ```bash
 # Basic receive (settings auto-detected from binary header)
-python receiver.py --received_file output/combined_binary_received.bin --image_path Datasets/Kodak/kodim23.png
+python receiver.py --received_file output/combined_binary.bin --image_path Datasets/Kodak/kodim23.png
 
 # Override codebook setting manually
-python receiver.py --received_file output/oucombined_binary_received.bin \
+python receiver.py --received_file output/combined_binary.bin \
                    --image_path Datasets/Kodak/kodim23.png \
                    --use_codebook true
 
 # Override resolution if auto-detection fails
-python receiver.py --received_file output/combined_binary_received.bin --res_h 512 --res_w 768
+python receiver.py --received_file output/combined_binary.bin --res_h 512 --res_w 768
 ```
 
 Reconstructed image is saved under `recon/` and quality metrics (PSNR, MS-SSIM, LPIPS) are printed and appended to an Excel file.
@@ -76,15 +133,11 @@ swin-semantic-communication/
 ├── Codebook/                        # Pre-trained vector quantization codebooks (.npy)
 │   ├── codebook_{D}d_{K}clusters_{type}.npy
 │   ├── adaptive_patching_codebook_{D}d_{K}clusters_{type}.npy
-│   └── index_to_codeword.pkl        # Codeword lookup table for Hamming encoding
+│   └── index_to_codeword.pkl        # Codeword lookup table for Hamming encoding (k=512)
 │
 ├── matlab/                          # MATLAB launcher scripts
-│   ├── matlab_transmitter.m         # Run transmitter.py locally
-│   ├── matlab_receiver.m            # Run receiver.py locally
-│   ├── remote_transmit.m            # Run transmitter.py on remote server via SSH
-│   ├── remote_receive.m             # Run receiver.py on remote server via SSH
-│   ├── simulation.m                 # Local simulation launcher
-│   └── simulation_remote.m          # Remote simulation launcher
+│   ├── simulation.m                 # Local simulation launcher (calls sim.py locally)
+│   └── simulation_remote.m          # Remote simulation launcher (SSH + SCP)
 │
 ├── Testing/                         # Test notebooks
 │   ├── ber.ipynb                    # BER analysis
@@ -92,7 +145,7 @@ swin-semantic-communication/
 │       └── error-correction-testing.ipynb
 │
 ├── transmitter.py                   # Transmitter (adaptive patching, codebook, Hamming encoding)
-├── transmitter_pi.py                # Transmitter for Raspberry Pi (Pi Camera support)
+├── transmitter_pi.py                # Transmitter for Raspberry Pi (quantized model, Pi Camera)
 ├── receiver.py                      # Receiver (auto-detects settings from binary header)
 ├── sim.py                           # Full simulated pipeline (no physical channel)
 │
@@ -100,7 +153,8 @@ swin-semantic-communication/
 ├── codebook_functions.py            # Codebook encoding/decoding functions
 ├── adaptive_functions.py            # Adaptive patching (quadtree, edge detection)
 ├── Swin_Training.py                 # Training script
-├── camera_testing.py                # Pi Camera utility
+├── download_kodek.py                # Downloads all 24 Kodak images into Datasets/kodak/
+├── camera_testing.py                # Pi Camera smoke-test (libcamera-still)
 │
 ├── Adaptive_patching.ipynb          # Adaptive patching experiments
 ├── SwinJSCC_Training.ipynb          # Training notebook
@@ -121,13 +175,13 @@ swin-semantic-communication/
 
 | Argument | Default | Description |
 |---|---|---|
-| `--image_path` | required | Path to input image (JPEG/DNG auto-converted to PNG) |
+| `--image_path` | required | Path to input image (JPEG/DNG auto-converted to PNG; images >3500 px on any side are downscaled) |
 | `--use_codebook` | off | Enable codebook quantization |
 | `--adaptive` | auto | `true` / `false` to override auto-detection |
 | `--k` | `512` | Codebook size (clusters): `256`, `512`, `1024` |
 | `--chunk_size` | `4` | Vector dimension: `2`, `4`, `8` |
 | `--patch_size` | auto | Quadtree base patch size: `28` or `60` |
-| `--depth` | auto | Quadtree depth: `4`, `5`, `6`, or `7` |
+| `--depth` | auto | Quadtree depth: `4`, `5`, `6`, or `7` (auto = `round(log2(max(H,W)/32))`, capped at 7) |
 
 ### Codebook combinations
 
@@ -139,17 +193,42 @@ swin-semantic-communication/
 | `4` | `1024` | 4d, 1024 clusters |
 | `8` | `1024` | 8d, 1024 clusters |
 
+The transmitter always loads the `_mst` codebook variant (e.g. `codebook_4d_512clusters_mst.npy`). The `_rayleigh` and `_rayleigh_gray_mapped` variants in `Codebook/` are alternative codebooks that can be swapped in manually.
+
+### Auto-adaptive decision logic
+
+At runtime, the transmitter computes whether adaptive patching is beneficial:
+
+```
+adaptive = (data_pixels < 0.8 × H × W)  AND  (H_new × W_new < H × W)
+```
+
+where `data_pixels = min_patch_w × min_patch_h × num_patches`. Override with `--adaptive true/false`.
+
 ### Binary header format
 
 The transmitter writes a 5-byte control header before the payload. Each byte uses redundant bit encoding (majority voting) so the receiver can recover settings even under bit errors:
 
 | Byte | Content |
 |---|---|
-| 1 | Adaptive patching flag (7-bit redundant) |
+| 1 | Adaptive patching flag (7-bit redundant: 0x00=off, 0x7F=on) |
 | 2 | Codebook enabled flag (7-bit redundant) |
 | 3 | Chunk size (2-bit × 3 repetitions: `01`=2, `10`=4, `11`=8) |
 | 4 | Codebook k size (2-bit × 3 repetitions: `01`=256, `10`=512, `11`=1024) |
-| 5 | Patch size flag (7-bit redundant: 0=28, 1=60) |
+| 5 | Patch size flag (7-bit redundant: 0x00=28, 0x7F=60) |
+
+For `k=512`, codebook indices are additionally mapped through `index_to_codeword.pkl` (a Hamming codeword lookup table) and stored as `uint16`, providing bit-level error correction on the index stream.
+
+The binary payload starts immediately after the 5-byte header. The coordinate/metadata section is prepended as a separate chunk with a 4-byte length prefix (produced by `combine_binary_files()`).
+
+### Intermediate outputs
+
+| File | Description |
+|---|---|
+| `output/patches_grid.png` | Grid of selected patches (adaptive mode) |
+| `output/patch_coords.bin` | Compact coordinate file for patch reconstruction |
+| `output/patch_boundaries.png` | Quadtree boundaries overlaid on the original image |
+| `output/combined_binary.bin` | Final binary ready to transmit |
 
 ---
 
@@ -170,82 +249,226 @@ Settings (`chunk_size`, `k`, `use_codebook`, `patch_size`, adaptive mode) are **
 | `--adaptive` | auto | Override adaptive flag: `true` / `false` |
 | `--res_h`, `--res_w` | auto | Override resolution read from binary header |
 
+### Output paths
+
+Reconstructed images are saved under `recon/` using the following structure:
+
+- Without codebook: `recon/without_codebook/adaptive={true|false}/reconstructed_{name}.png`
+- With codebook: `recon/{chunk_size}d_{k}k/adaptive={true|false}/reconstructed_{chunk_size}d_{k}k_{name}.png`
+
+Quality metrics are appended to an Excel file in the project root:
+
+- Without codebook: `results_without_codebook_Adaptive = {true|false}.xlsx`
+- With codebook: `results_{chunk_size}d_{k}k_Adaptive = {true|false}.xlsx`
+
+### Hamming index decoding (k=512)
+
+When Hamming-encoded indices are received, the receiver first tries a direct codeword lookup. If the received value does not match any known codeword (due to bit errors), it falls back to a minimum Hamming distance search against all 512 codewords to recover the most likely original index.
+
 ---
 
 ## Simulation (no physical channel)
 
-`sim.py` runs the full transmit → channel → receive pipeline in software, useful for measuring performance metrics across datasets without hardware.
+`sim.py` runs the full transmit → channel → receive pipeline in software, useful for measuring performance across datasets without hardware.
 
 ```bash
-python sim.py
+python sim.py --type both --image_path Datasets/Kodak/kodim23.png --noise 10
 ```
 
-Configure dataset paths and SNR values inside the script. Results are saved to `recon/` and logged to Excel.
+### CLI arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--type` | required | `tx` (transmit only), `rx` (receive only), `both` (full pipeline) |
+| `--received_file` | `./Binary/simulated.bin` | Path to binary for receive step |
+| `--image_path` | none | Input/reference image |
+| `--use_codebook` | off | Enable codebook quantization |
+| `--k` | `512` | Codebook clusters |
+| `--chunk_size` | `4` | Vector dimension |
+| `--adaptive` | auto | Override adaptive mode: `true` / `false` |
+| `--patch_size` | `28` | Base patch size |
+| `--noise` | `10.0` | Channel noise level (Eb/N0 in dB) |
+| `--low_th` | `100` | Canny edge low threshold |
+| `--high_th` | `200` | Canny edge high threshold |
+| `--v_val` | `100` | Quadtree edge-count threshold |
+| `--kernel` | `1` | Gaussian blur kernel size (pre-processing) |
+| `--depth` | auto | Quadtree depth: `4`, `5`, `6`, or `7` |
+
+### Channel simulation
+
+- **Codebook path**: AWGN noise is applied at the binary level. Bits are mapped to BPSK (+1/−1), Gaussian noise is added at `Eb/N0 = noise_db` dB (`σ = sqrt(1 / (2 × 10^(SNR/10)))`), then hard-decided back to bits.
+- **Non-codebook path**: the neural channel model (`pass_through_channel`) is invoked at the specified SNR before int8 quantization.
+
+Output image: `./recon/simulated_image.png`. Metrics are printed to stdout but not written to Excel.
 
 The notebooks `swinjscc-full-simulation_normal.ipynb` and `swinjscc-full-simulation_exp.ipynb` provide interactive versions with per-image visualization.
 
 ---
 
-## MATLAB Integration
+## Raspberry Pi Transmitter
 
-MATLAB scripts in `matlab/` launch the Python scripts via `system()`. **Run MATLAB with its working directory set to the project root** (not inside `matlab/`), so relative paths to `Datasets/`, `Weights/`, etc. resolve correctly.
+`transmitter_pi.py` is a Pi-optimized variant of `transmitter.py`:
 
-### Local execution
+### Differences from `transmitter.py`
 
-```matlab
-% In MATLAB, cd to project root first, then:
-run('matlab/matlab_transmitter.m')
-run('matlab/matlab_receiver.m')
+| Feature | transmitter.py | transmitter_pi.py |
+|---|---|---|
+| Model file | `SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model` | `swinjscc_quantized.pt` (dynamic int8 quantization of all `nn.Linear` layers) |
+| Pi Camera | No | Yes — `--use_camera` flag |
+| Header | 5-byte full header | 1-byte adaptive flag only |
+| Adaptive threshold | 0.8 × H × W | 0.7 × H × W |
+| Fixed depth | No (auto) | Yes — depth=5 |
+| Codebook combos | All 5 | (4,512), (2,256), (8,1024) only |
+
+### CLI arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--image_path` | none | Path to input image (use this or `--use_camera`) |
+| `--use_camera` | off | Capture from Pi Camera (`libcamera-still`) |
+| `--use_codebook` | off | Enable codebook quantization |
+| `--adaptive` | auto | Override adaptive mode |
+| `--k` | `512` | Codebook clusters |
+| `--chunk_size` | `4` | Vector dimension |
+
+### Generating the quantized model
+
+The quantized model is not included — you must generate it from the standard `.model` weights:
+
+```python
+import torch
+from swin_functions import SwinJSCC  # configure net as in transmitter.py
+
+model_fp32 = net  # your loaded SwinJSCC model
+quantized = torch.quantization.quantize_dynamic(
+    model_fp32, {torch.nn.Linear}, dtype=torch.qint8
+)
+torch.save(quantized, "swinjscc_quantized.pt")
 ```
 
-Edit the variable block at the top of each script to set `imagePath`, `useCodebook`, `k`, `chunk`, etc.
+### Pi Camera testing
 
-### Remote execution (SSH)
+```bash
+python camera_testing.py
+```
 
-`remote_transmit.m` / `remote_receive.m` upload the image to a remote server via SCP, run the Python script remotely via SSH, then download the result back. `remote_receive.m` also parses the Python output to auto-detect used parameters and logs results to `results_summary.xlsx`.
-
-Edit the top of each script to set `remoteUser`, `remoteHost`, `remotePython`, `remoteScriptDir`.
+Runs a single `libcamera-still` capture and saves the result to `image_{timestamp}.png`.
 
 ---
 
-## Model Configuration
+## MATLAB Integration
 
-The model is configured in the `Args` and `config` classes inside each script:
+MATLAB scripts in `matlab/` launch `sim.py` via `system()`. **Run MATLAB with its working directory set to the project root** (not inside `matlab/`), so relative paths to `Datasets/`, `Weights/`, etc. resolve correctly.
 
-| Parameter | Default | Options |
+### Local execution (`simulation.m`)
+
+Edit the variable block at the top of `simulation.m` to set `imagePath`, `useCodebook`, `k`, `chunk_size`, `noise`, etc., then run:
+
+```matlab
+run('matlab/simulation.m')
+```
+
+All `sim.py` CLI arguments are supported. The Python executable path is set near the top of the file — update `pythonExe` if needed (default: `C:\Python311\cv\Scripts\python.exe`).
+
+### Remote execution (`simulation_remote.m`)
+
+`simulation_remote.m` uploads the image to a remote server via SCP, runs `sim.py` remotely via SSH, then downloads the results:
+
+- For `tx`/`both`: downloads `output/patch_boundaries.png` and `Binary/simulated.bin`, displays patch boundaries in a MATLAB figure.
+- For `rx`/`both`: downloads `recon/simulated_image.png`, displays the reconstructed image.
+
+Edit these variables at the top of the script:
+
+```matlab
+remoteUser      = 'your_username';
+remoteHost      = '192.168.x.x';
+pythonExe       = '/path/to/python3';
+remoteScriptDir = '/path/to/swin-semantic-communication';
+```
+
+---
+
+## Model Architecture
+
+### Variants
+
+| Model name | SA (SNR Adaption) | RA (Rate Adaption) |
 |---|---|---|
-| `model` | `SwinJSCC_w/o_SAandRA` | `SwinJSCC_w/o_SAandRA`, `SwinJSCC_w/_SA`, `SwinJSCC_w/_RA`, `SwinJSCC_w/_SAandRA` |
-| `channel_type` | `rayleigh` | `rayleigh`, `awgn` |
-| `C` (bottleneck) | `32` | `32` (1/48 CBR), `64` (1/24), `96` (1/16), `128` (1/12) |
-| `multiple_snr` | `3` | Any integer (dB) |
-| `model_size` | `base` | `small`, `base`, `large` |
+| `SwinJSCC_w/o_SAandRA` | No | No |
+| `SwinJSCC_w/_SA` | Yes | No |
+| `SwinJSCC_w/_RA` | No | Yes |
+| `SwinJSCC_w/_SAandRA` | Yes | Yes |
 
-Model weight filename convention:
+### Size configurations
+
+| `model_size` | Encoder depths | Decoder depths |
+|---|---|---|
+| `small` | [2,2,2,2] | [2,2,2,2] |
+| `base` | [2,2,6,2] | [2,6,2,2] |
+| `large` | [2,2,18,2] | [2,18,2,2] |
+
+All sizes use `embed_dims=[128,192,256,320]`, `num_heads=[4,6,8,10]`, `window_size=8`.
+
+### Channel Bandwidth Ratio (CBR)
+
+| `C` (bottleneck) | CBR |
+|---|---|
+| `32` | 1/48 |
+| `64` | 1/24 |
+| `96` | 1/16 |
+| `128` | 1/12 |
+
+### Model weight filename convention
+
 ```
 SwinJSCC_{model}_{channel}_HRimage_snr{snr}_psnr_C{C}.model
 ```
+
+Example: `SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model`
+
+### Other model configuration
+
+| Parameter | Default | Options |
+|---|---|---|
+| `channel_type` | `rayleigh` | `rayleigh`, `awgn` |
+| `multiple_snr` | `3` | Any integer (dB) |
 
 ---
 
 ## Directory Layout (auto-created at runtime)
 
 ```
-output/                    # Intermediate files produced by the transmitter
-│   ├── patches_grid.png   # Adaptive patch grid image
-│   ├── patch_coords.bin   # Patch coordinates / resolution metadata
-│   └── combined_binary.bin  # Final binary ready to transmit
+output/                       # Intermediate files produced by the transmitter
+│   ├── patches_grid.png      # Adaptive patch grid image
+│   ├── patch_coords.bin      # Patch coordinates / resolution metadata
+│   ├── patch_boundaries.png  # Quadtree boundaries on original image
+│   └── combined_binary.bin   # Final binary ready to transmit
 
 Binary/
-├── Transmitted_Binary/    # Labelled copies of combined_binary.bin (per image/mode)
-└── Received_Binary/       # .bin files after channel
+├── Transmitted_Binary/       # Labelled copies of combined_binary.bin (per image/mode)
+├── Received_Binary/          # .bin files after channel
+└── Received_Text/            # Text-format received data
 
-recon/                     # Reconstructed images
-Weights/                   # Model weight files (.model)
+recon/                        # Reconstructed images
+Weights/                      # Model weight files (.model, .pt)
 Datasets/
-├── Kodak/                 # kodim01.png … kodim24.png
-├── Clic2021/              # CLIC 2021 test images
-└── DIV2K/                 # DIV2K training set
+├── Kodak/                    # kodim01.png … kodim24.png
+├── Clic2021/                 # CLIC 2021 test images
+└── DIV2K/                    # DIV2K training set
 ```
+
+---
+
+## Output Metrics
+
+The receiver prints and saves to Excel:
+
+| Metric | Description |
+|---|---|
+| PSNR | Peak Signal-to-Noise Ratio (dB), higher is better |
+| MS-SSIM | Multi-Scale Structural Similarity, 0–1, higher is better |
+| LPIPS | Perceptual similarity, lower is better |
+| Compression Ratio | Original image size / transmitted binary size |
 
 ---
 
@@ -265,12 +488,7 @@ Look for a `Weights/` folder or a release attachment. Download the file named:
 SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model
 ```
 
-Place it at `Weights/` in the project root:
-
-```bash
-mkdir -p Weights
-# then move the downloaded file here
-```
+Place it at `Weights/` in the project root.
 
 ---
 
@@ -299,14 +517,14 @@ Datasets/DIV2K/
 #### Step 2 — Download the Kodak test dataset
 
 ```bash
-mkdir -p Datasets/Kodak
+python download_kodek.py
 ```
 
-Download 24 PNG images from [http://r0k.us/graphics/kodak/](http://r0k.us/graphics/kodak/) (`kodim01.png` … `kodim24.png`) and place them in `Datasets/Kodak/`.
+Or manually download the 24 PNG images from [http://r0k.us/graphics/kodak/](http://r0k.us/graphics/kodak/) and place them in `Datasets/Kodak/`.
 
 #### Step 3 — Fix the training script for training from scratch
 
-`Swin_Training.py` has a `load_weights()` call at the top of `__main__` that tries to load an existing `.model` file before training begins. Comment it out so training starts from random initialization:
+`Swin_Training.py` has a `load_weights()` call at the top of `__main__` that tries to load an existing `.model` file before training begins. Comment it out so training starts from random initialization.
 
 Open `Swin_Training.py` and find these two lines (around line 1973):
 
@@ -365,7 +583,6 @@ Checkpoints are saved to `history/models/` every `save_freq` epochs, named:
 ```
 history/models/YYYY-MM-DD-HH_MM_SS_EP5.model
 history/models/YYYY-MM-DD-HH_MM_SS_EP10.model
-...
 ```
 
 #### Step 6 — Install the trained weights
@@ -378,11 +595,9 @@ cp history/models/<your_best_checkpoint>.model \
    Weights/SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model
 ```
 
-The transmitter and receiver scripts load weights from that fixed path, so naming it correctly is important.
-
 #### Step 7 — (Optional) Resume from a checkpoint
 
-To resume interrupted training or fine-tune from a checkpoint, un-comment (or update) the `load_weights` call in `Swin_Training.py`:
+To resume interrupted training or fine-tune from a checkpoint, update the `load_weights` call in `Swin_Training.py`:
 
 ```python
 model_path = "history/models/<your_checkpoint>.model"
@@ -407,15 +622,10 @@ load_weights(model_path)
 
 Codebooks (used by `--use_codebook`) are pre-trained and already in `Codebook/`. To retrain them (e.g. for a new model or different patch size), use `swinjscc-codebook-training.ipynb`. You need a trained `.model` file first.
 
----
+The `Codebook/` directory contains three naming variants per dimension/cluster combination:
 
-## Output Metrics
-
-The receiver prints and saves to Excel:
-
-| Metric | Description |
+| Suffix | Description |
 |---|---|
-| PSNR | Peak Signal-to-Noise Ratio (dB), higher is better |
-| MS-SSIM | Multi-Scale Structural Similarity, 0–1, higher is better |
-| LPIPS | Perceptual similarity, lower is better |
-| Compression Ratio | Original image size / transmitted binary size |
+| `_mst` | Trained with minimum spanning tree initialization (used by default) |
+| `_rayleigh` | Trained on Rayleigh channel features |
+| `_rayleigh_gray_mapped` | Rayleigh features with gray-code index mapping |
