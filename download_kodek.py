@@ -2,7 +2,7 @@ import os
 import requests
 
 BASE_URL = "https://r0k.us/graphics/kodak/kodak"
-OUTPUT_DIR = "kodak_images"
+OUTPUT_DIR = "Datasets/kodak"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
