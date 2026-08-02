@@ -1,5 +1,7 @@
+import os
 import warnings
 
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 warnings.filterwarnings("ignore")
 
 import torch.nn as nn
@@ -72,7 +74,7 @@ TX_BINARY_BASE_PATH = './Binary/Transmitted_Binary/'
 int_size = 8
 NORMALIZE_CONSTANT = 20
 
-save_directories = ["./recon/", "./Binary/Received_Text/", "./Binary/Received_Binary/", "./Binary/Transmitted_Binary/", "./Weights/", "./Datasets/"]
+save_directories = ["./recon/", "./output/", "./Binary/Received_Text/", "./Binary/Received_Binary/", "./Binary/Transmitted_Binary/", "./Weights/", "./Datasets/"]
 
 for save_dir in save_directories:
     if not os.path.exists(save_dir):
@@ -539,7 +541,7 @@ def transmit_code(image_path, use_codebook=False, adaptive=None, noise=10.0, pat
                                             H=depth,        # maximum quadtree depth
                                             Pm=patch_size,      # base patch size before padding
                                             L=None,     # number of patches in the grid   (If None, it will be set to the number of adaptive patches)
-                                            grid_image_file="patches_grid.png", coord_file="patch_coords.bin",
+                                            grid_image_file="output/patches_grid.png", coord_file="output/patch_coords.bin",
                                             padding=2, visualize=False)
         
     
@@ -554,7 +556,7 @@ def transmit_code(image_path, use_codebook=False, adaptive=None, noise=10.0, pat
     print(f"Adaptive Patch enabled : {adaptive_patch_enabled}")
 
     if adaptive_patch_enabled:
-        image_path = 'patches_grid.png'
+        image_path = 'output/patches_grid.png'
         adaptive_string = "adaptive"
     else:
         adaptive_string = "wo_adaptive"
@@ -566,13 +568,12 @@ def transmit_code(image_path, use_codebook=False, adaptive=None, noise=10.0, pat
 
         if not adaptive_patch_enabled:
             resolution_data = f"Resolution: {H_image}x{W_image}".encode('utf-8')
-            # Open the binary file in write-binary mode and overwrite it
-            binary_file_path = "patch_coords.bin"  # Replace with your binary file path
+            binary_file_path = "output/patch_coords.bin"
             with open(binary_file_path, 'wb') as f:
                 f.write(resolution_data)
             print(f"Binary file overwritten with resolution: {H_image}x{W_image}")
 
-        bin_path = "./Binary/indices.bin"
+        bin_path = "./output/indices.bin"
         indices, _ = encode_image_with_nd_codebook(net, codebook_path, image_path, config, device, chunk_size)
         indices_np = indices.cpu().numpy()
 
@@ -638,25 +639,23 @@ def transmit_code(image_path, use_codebook=False, adaptive=None, noise=10.0, pat
         print(f"Encoded feature saved to {bin_path}")
         # combine_binary_files("patch_coords.bin", bin_path, "combined_binary.bin")
 
-        simulate_awgn_on_file(bin_path, './Binary/noisy.bin', noise)
-        combine_binary_files("patch_coords.bin", './Binary/noisy.bin', "./Binary/simulated.bin")
+        simulate_awgn_on_file(bin_path, './output/noisy.bin', noise)
+        combine_binary_files("output/patch_coords.bin", './output/noisy.bin', "./Binary/simulated.bin")
 
     else:
         print("Encoding without codebook...")
 
         if not adaptive_patch_enabled:
             resolution_data = f"Resolution: {H_image}x{W_image}".encode('utf-8')
-            # Open the binary file in write-binary mode and overwrite it
-            binary_file_path = "patch_coords.bin"  # Replace with your binary file path
+            binary_file_path = "output/patch_coords.bin"
             with open(binary_file_path, 'wb') as f:
                 f.write(resolution_data)
             print(f"Binary file overwritten with resolution: {H_image}x{W_image}")
-        
 
-        output_path = "./Binary/encoded_feature.bin"
+
+        output_path = "./output/encoded_feature.bin"
         process_and_encode_image_to_binary_sim(image_path, output_path, adaptive_patch_enabled, NORMALIZE_CONSTANT, int_size, int(noise))
-        #combine_binary_files("patch_coords.bin", output_path, "combined_binary.bin")
-        combine_binary_files("patch_coords.bin", output_path, "./Binary/simulated.bin")
+        combine_binary_files("output/patch_coords.bin", output_path, "./Binary/simulated.bin")
         bin_file_path = output_path
 
         # simulate_awgn_on_file(output_path, './Binary/noisy.bin', noise)
@@ -752,15 +751,15 @@ def decode_and_evaluate(received_binary_path, image_path=None, resolution = (512
         save_image(recon_image, f"reconstructed_patches_grid.png")
 
         reconstructed_image = decode_image_adaptive(grid_image_file="./recon/reconstructed_patches_grid.png",
-                                                    coord_file="patch_coord_received.bin",Pm=patch_size, padding=2)
+                                                    coord_file="output/patch_coord_received.bin", Pm=patch_size, padding=2)
         reconstructed_image = reconstructed_image.clamp(0,1)
-        
+
 
         if image_path is not None:
             psnr_value = calculate_psnr(input_image, reconstructed_image.to(device))
             plot_images(input_image, reconstructed_image, image_name)
             #print(f"PSNR: {psnr_value:.2f} dB")
-        else: 
+        else:
             plot_single_image(reconstructed_image)
 
 
@@ -850,7 +849,7 @@ def decode_indices_and_plot (received_binary_path , codebook_path, image_path=No
     else:
         save_image(recon_image, f"reconstructed_patches_grid.png", grid_image_base_path)
         reconstructed_image = decode_image_adaptive(grid_image_file="./recon/reconstructed_patches_grid.png",
-                                                    coord_file="patch_coord_received.bin",Pm=patch_size, padding=2)
+                                                    coord_file="output/patch_coord_received.bin", Pm=patch_size, padding=2)
         reconstructed_image = reconstructed_image.clamp(0,1)
 
         if image_path is not None:
@@ -888,8 +887,8 @@ def decode_indices_and_plot (received_binary_path , codebook_path, image_path=No
 
 def receive_code(received_filename, image_path=None, use_codebook=False, resolution_args=(None, None), adaptive_override=None):
     global k, chunk_size, adaptive_patch_enabled, patch_size, codebook_enabled, key, codebook_path_adaptive, codebook_path_wo_adaptive
-    separate_binary_file(received_filename, "patch_coord_received.bin", "image_data_received.bin")
-    received_bin_file = 'image_data_received.bin'
+    separate_binary_file(received_filename, "output/patch_coord_received.bin", "output/image_data_received.bin")
+    received_bin_file = 'output/image_data_received.bin'
 
     # with open(received_bin_file, "rb") as f:
     #     flag_byte = f.read(1)
@@ -961,7 +960,7 @@ def receive_code(received_filename, image_path=None, use_codebook=False, resolut
         codebook_path_final = codebook_path_adaptive
         #print(f"Using codebook: {codebook_path_final}")
 
-        binary_file_path = "patch_coord_received.bin"
+        binary_file_path = "output/patch_coord_received.bin"
         with open(binary_file_path, "rb") as f:
             # Read grid size (rows, cols)
             grid_size = np.fromfile(f, dtype=np.uint16, count=2)
@@ -981,7 +980,7 @@ def receive_code(received_filename, image_path=None, use_codebook=False, resolut
         codebook_path_final = codebook_path_wo_adaptive
         #print(f"Using codebook: {codebook_path_final}")
 
-        binary_file_path = "patch_coord_received.bin"  # Replace with your binary file path
+        binary_file_path = "output/patch_coord_received.bin"
         with open(binary_file_path, 'rb') as f:
             data = f.read()
         resolution_str = data.decode('utf-8')

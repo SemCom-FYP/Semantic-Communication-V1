@@ -169,6 +169,126 @@ swin-semantic-communication/
 
 ---
 
+## Architecture
+
+### End-to-End Pipeline
+
+```mermaid
+flowchart LR
+    A[Input Image] --> B["Adaptive Patching\nQuadtree"]
+    B --> C["SwinJSCC\nEncoder"]
+    C --> D{Codebook?}
+    D -->|yes| E["Vector Quantization\n+ Hamming Encoding"]
+    D -->|no| F["Int8 Quantization"]
+    E --> G["combined_binary.bin\n5-byte header + payload"]
+    F --> G
+    G -->|"AWGN or\nRayleigh Fading"| H["Received binary"]
+    H --> I["Header Decode\nmajority vote"]
+    I --> J{Codebook?}
+    J -->|yes| K["Hamming Decode\n+ VQ Lookup"]
+    J -->|no| L["Int8 Dequant"]
+    K --> M["SwinJSCC\nDecoder"]
+    L --> M
+    M --> N{Adaptive?}
+    N -->|yes| O["Patch Reconstruction"]
+    N -->|no| P["Reconstructed Image"]
+    O --> P
+```
+
+### SwinJSCC Neural Network
+
+The encoder compresses an image into `M = H·W/256` feature tokens at bottleneck dimension `C` (default C=32). The decoder mirrors this with upsampling stages. The channel model sits between them.
+
+```mermaid
+flowchart TB
+    img["Input Image — B × 3 × H × W"]
+
+    subgraph ENC["Encoder"]
+        pe["PatchEmbed  Conv2d stride=2\nB × H/2·W/2 × 128"]
+        s0["Stage 0  SwinTransformer × depth\nB × H/2·W/2 × 128"]
+        s1["Stage 1  PatchMerging + SwinTransformer\nB × H/4·W/4 × 192"]
+        s2["Stage 2  PatchMerging + SwinTransformer\nB × H/8·W/8 × 256"]
+        s3["Stage 3  PatchMerging + SwinTransformer\nB × H/16·W/16 × 320"]
+        proj["LayerNorm + Linear 320→C\nfeature  B × M × C"]
+        pe --> s0 --> s1 --> s2 --> s3 --> proj
+    end
+
+    subgraph CH["Wireless Channel"]
+        cnorm["Power Normalize"]
+        cnoise["+ AWGN  σ=sqrt of 1 over 2·10^SNR/10\nor Rayleigh fading  h ~ CN(0,1)"]
+        cnorm --> cnoise
+    end
+
+    subgraph DEC["Decoder"]
+        dproj["Linear C→320\nB × M × 320"]
+        d0["Stage 0  SwinTransformer + PixelShuffle 2×\nB × 4M × 256"]
+        d1["Stage 1  SwinTransformer + PixelShuffle 2×\nB × 16M × 192"]
+        d2["Stage 2  SwinTransformer + PixelShuffle 2×\nB × 64M × 128"]
+        d3["Stage 3  SwinTransformer + PixelShuffle 2×\nB × 256M × 3"]
+        dproj --> d0 --> d1 --> d2 --> d3
+    end
+
+    out["Reconstructed Image — B × 3 × H × W"]
+
+    img --> pe
+    proj --> cnorm
+    cnoise --> dproj
+    d3 --> out
+```
+
+Each stage is built from alternating W-MSA and SW-MSA blocks:
+
+```mermaid
+flowchart LR
+    x[x] --> ln1[LayerNorm]
+    ln1 --> attn["Window Attention\nW-MSA even blocks\nSW-MSA odd blocks"]
+    attn --> add1[+]
+    x --> add1
+    add1 --> ln2[LayerNorm]
+    ln2 --> mlp["MLP\nLinear - GELU - Linear"]
+    mlp --> add2[+]
+    add1 --> add2
+    add2 --> out[out]
+```
+
+### Adaptive Patching Pipeline
+
+Content-aware patching skips low-detail regions and focuses encoder capacity on edges and texture.
+
+```mermaid
+flowchart TB
+    orig[Image] --> blur[Gaussian Blur]
+    blur --> canny[Canny Edge Detection]
+    canny --> qt["Quadtree Partition\nrecursively subdivide regions\nwhere edge count > threshold"]
+    qt --> patches["Variable-size leaf patches"]
+    patches --> resize["Resize each patch to Pm×Pm\n+ 2px padding  →  32×32"]
+    resize --> grid["Pack into grid\ndimensions = multiples of 128"]
+    grid --> enc_out["SwinJSCC Encoder\nstandard path from here"]
+    qt --> coords["Patch coordinates per leaf\nx, y, w, h"]
+    coords --> bin_out["patch_coords.bin\nembedded in binary header Part 1"]
+```
+
+### Binary Packet Format
+
+```
+combined_binary.bin
+┌──────────────┬──────────────────────────────────────┬───────────────────────────────────────────────────┐
+│  4 bytes     │  Part 1 — Metadata (variable length) │  Part 2 — Feature payload                         │
+│  uint32 len  │                                      │                                                   │
+│  of Part 1   ├──────────────────────────────────────┼───────────────────────────────────────────────────┤
+│              │  Non-adaptive:                       │  Byte 0  adaptive flag  (7-bit majority vote)     │
+│              │    "Resolution: HxW"  (UTF-8)        │  Byte 1  codebook flag  (7-bit majority vote)     │
+│              │                                      │  Byte 2  chunk_size     (2-bit × 3 repeats)       │
+│              │  Adaptive:                           │  Byte 3  k size         (2-bit × 3 repeats)       │
+│              │    uint16  grid rows, cols           │  Byte 4  patch_size     (7-bit majority vote)     │
+│              │    uint16  H, W, C                   │  Bytes 5+                                         │
+│              │    uint16  num_patches               │    no codebook:   int8 feature array              │
+│              │    uint8   log2 scale per patch      │    with codebook: uint16 Hamming-encoded indices  │
+└──────────────┴──────────────────────────────────────┴───────────────────────────────────────────────────┘
+```
+
+---
+
 ## Transmitter
 
 ### CLI arguments
@@ -432,30 +552,6 @@ Example: `SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model`
 |---|---|---|
 | `channel_type` | `rayleigh` | `rayleigh`, `awgn` |
 | `multiple_snr` | `3` | Any integer (dB) |
-
----
-
-## Directory Layout (auto-created at runtime)
-
-```
-output/                       # Intermediate files produced by the transmitter
-│   ├── patches_grid.png      # Adaptive patch grid image
-│   ├── patch_coords.bin      # Patch coordinates / resolution metadata
-│   ├── patch_boundaries.png  # Quadtree boundaries on original image
-│   └── combined_binary.bin   # Final binary ready to transmit
-
-Binary/
-├── Transmitted_Binary/       # Labelled copies of combined_binary.bin (per image/mode)
-├── Received_Binary/          # .bin files after channel
-└── Received_Text/            # Text-format received data
-
-recon/                        # Reconstructed images
-Weights/                      # Model weight files (.model, .pt)
-Datasets/
-├── Kodak/                    # kodim01.png … kodim24.png
-├── Clic2021/                 # CLIC 2021 test images
-└── DIV2K/                    # DIV2K training set
-```
 
 ---
 
