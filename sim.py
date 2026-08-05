@@ -40,6 +40,7 @@ from codebook_functions import *
 from adaptive_functions import *
 
 import argparse
+import re
 
 from pytorch_msssim import ms_ssim as msssim
 from lpips import LPIPS
@@ -87,17 +88,48 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
 
+# ── Model path (only line to change when switching weights) ──────────────────
+model_path = "./Weights/SwinJSCC_wo_SAandRA_AWGN_HRimage_snr10_psnr_C192.model"
+
+def _parse_model_path(path):
+    name = os.path.splitext(os.path.basename(path))[0]
+
+    c_match = re.search(r'_C(\d+)$', name)
+    C = c_match.group(1) if c_match else '32'
+
+    snr_match = re.search(r'_snr(\d+)_', name)
+    snr = snr_match.group(1) if snr_match else '3'
+
+    channel_type = 'awgn' if re.search(r'AWGN', name, re.IGNORECASE) else 'rayleigh'
+
+    if 'wo_SAandRA' in name:
+        model_variant = 'SwinJSCC_w/o_SAandRA'
+    elif 'w_SAandRA' in name:
+        model_variant = 'SwinJSCC_w/_SAandRA'
+    elif 'w_SA' in name:
+        model_variant = 'SwinJSCC_w/_SA'
+    elif 'w_RA' in name:
+        model_variant = 'SwinJSCC_w/_RA'
+    else:
+        model_variant = 'SwinJSCC_w/o_SAandRA'
+
+    return C, snr, channel_type, model_variant
+
+_C, _snr, _channel_type, _model_variant = _parse_model_path(model_path)
+print(f"Model config parsed — C={_C}, SNR={_snr}, channel={_channel_type}, variant={_model_variant}")
+
+
 class Args:
     def __init__(self):
-        self.training = False  # Set to False if testing
-        self.trainset = 'DIV2K'  # Choices: ['CIFAR10', 'DIV2K']
-        self.testset = 'kodak'  # Choices: ['kodak', 'CLIC21', 'ffhq']
-        self.distortion_metric = 'MSE'  # Choices: ['MSE', 'MS-SSIM']
-        self.model = 'SwinJSCC_w/o_SAandRA'  # Choices: ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
-        self.channel_type = 'awgn'  # Choices: ['awgn', 'rayleigh']
-        self.C = '32'  # Bottleneck dimension, any string/number value can be set (32 = 1/48, 64 = 1/24, 96 = 1/16, 128 = 1/12)
-        self.multiple_snr = '3'  # Random or fixed SNR, set as string (e.g., '10')
-        self.model_size = 'base'  # Choices: ['small', 'base', 'large']
+        self.training = False
+        self.trainset = 'DIV2K'
+        self.testset = 'kodak'
+        self.distortion_metric = 'MSE'
+        self.model = _model_variant
+        self.channel_type = _channel_type
+        self.C = _C
+        self.multiple_snr = _snr
+        self.model_size = 'base'
 
 # Initialize the arguments
 args = Args()
@@ -258,7 +290,6 @@ logger.disabled = True
 logger.info(config.__dict__)
 torch.manual_seed(seed=config.seed)
 net = SwinJSCC(args, config)
-model_path = "./Weights/SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model"  
 load_weights(model_path)
 net = net.to(device)
 
@@ -695,7 +726,7 @@ def decode_redundant_byte(byte_val, method="7bit"):
 
 def decode_and_evaluate(received_binary_path, image_path=None, resolution = (512,768), NORMALIZE_CONSTANT = 20, int_size=8, adaptive=False):           # Image path is original image
 
-    tensor_shape = (1, int((resolution[0]*resolution[1])/(16*16)), 32)          # (Image size is 512x768x3 --> tensor (1, H/16 * W/16, 32))
+    tensor_shape = (1, int((resolution[0]*resolution[1])/(16*16)), int(args.C))
 
     # if int_size == 8: 
     #     received_feature = np.fromfile(received_binary_path, dtype=np.int8).reshape(tensor_shape)
