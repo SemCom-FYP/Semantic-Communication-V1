@@ -89,7 +89,7 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
 # ── Model path (only line to change when switching weights) ──────────────────
-model_path = "./Weights/SwinJSCC_wo_SAandRA_AWGN_HRimage_snr10_psnr_C192.model"
+model_path = "./Weights/SwinJSCC_wo_SAandRA_Rayleigh_HRimage_snr3_psnr_C32.model"
 
 def _parse_model_path(path):
     name = os.path.splitext(os.path.basename(path))[0]
@@ -726,7 +726,7 @@ def decode_redundant_byte(byte_val, method="7bit"):
 
 def decode_and_evaluate(received_binary_path, image_path=None, resolution = (512,768), NORMALIZE_CONSTANT = 20, int_size=8, adaptive=False):           # Image path is original image
 
-    tensor_shape = (1, int((resolution[0]*resolution[1])/(16*16)), int(args.C))
+    tensor_shape = (1, (int(resolution[0]) * int(resolution[1])) // (16 * 16), int(args.C))
 
     # if int_size == 8: 
     #     received_feature = np.fromfile(received_binary_path, dtype=np.int8).reshape(tensor_shape)
@@ -852,7 +852,7 @@ def decode_indices_and_plot (received_binary_path , codebook_path, image_path=No
     valid_indices = torch.clamp(valid_indices, min=0, max=k-1)
     #valid_indices = recovered_indices
 
-    M = int((resolution[0]*resolution[1])/(16*16))
+    M = (int(resolution[0]) * int(resolution[1])) // (16 * 16)
     output_image_base_path = f"./recon/{chunk_size}d_{k}k/adaptive={adaptive}/"
     grid_image_base_path = "./recon/"
 

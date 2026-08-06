@@ -31,20 +31,20 @@ def quantize_feature_nd(feature, codebook_nd_torch, chunk_size):
 
 def dequantize_feature_nd(indices, M, codebook_nd_torch, chunk_size):
     """
-    Reconstruct the feature from indices [M*(32/chunk_size)] using the n-d codebook.
-    indices: [M*(32/chunk_size)]
+    Reconstruct the feature from indices using the n-d codebook.
+    indices: [M*(C/chunk_size)]
     M: the original M dimension
     codebook_nd_torch: [K, chunk_size]
 
-    Returns [1, M, 32]
+    Returns [1, M, C]
     """
-    # Reconstruct each n-d vector
-    reconstructed_nd = codebook_nd_torch[indices]  # [M*(32/chunk_size), chunk_size]
+    reconstructed_nd = codebook_nd_torch[indices]  # [M*(C/chunk_size), chunk_size]
 
-    # Reshape to [M, (32/chunk_size), chunk_size] then to [M, 32]
-    num_chunks = 32 // chunk_size
-    reconstructed_vectors = reconstructed_nd.view(M, num_chunks, chunk_size).reshape(M, 32)
-    reconstructed_feature = reconstructed_vectors.unsqueeze(0)  # [1, M, 32]
+    # Derive num_chunks and C from actual tensor size — works for any bottleneck dim
+    num_chunks = reconstructed_nd.shape[0] // M
+    C_dim = num_chunks * chunk_size
+    reconstructed_vectors = reconstructed_nd.view(M, num_chunks, chunk_size).reshape(M, C_dim)
+    reconstructed_feature = reconstructed_vectors.unsqueeze(0)  # [1, M, C]
     return reconstructed_feature
 
 
